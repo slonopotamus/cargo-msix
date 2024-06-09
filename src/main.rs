@@ -1,15 +1,15 @@
 #[macro_use]
 extern crate yaserde_derive;
 
-pub mod packagelayout;
 pub mod args;
 pub mod command_default;
 pub mod command_init;
+pub mod packagelayout;
 
-use clap::Parser;
-use anyhow::Result;
-use crate::command_init::run_command_init;
 use crate::command_default::run_command_default;
+use crate::command_init::run_command_init;
+use anyhow::Result;
+use clap::Parser;
 use log::info;
 use windows::Win32::System::Com::CoInitialize;
 
@@ -37,8 +37,8 @@ fn main() -> Result<()> {
 
     info!("Branching for specific command");
     match args.subcommands {
-        Some(_) => run_command_init(&args, &metadata)?,
-        None => run_command_default(&args, &metadata)?
+        Some(_) => run_command_init(args, &metadata)?,
+        None => run_command_default(args, &metadata)?,
     };
 
     Ok(())

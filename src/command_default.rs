@@ -1,10 +1,16 @@
-use anyhow::{anyhow, Context, Result, bail};
+use crate::args;
+use crate::packagelayout;
+use anyhow::{anyhow, bail, Context, Result};
+use cargo_metadata::camino::Utf8PathBuf;
 use std::{
     env::{current_dir, set_current_dir},
-    path::PathBuf, str::FromStr, mem::ManuallyDrop,
+    mem::ManuallyDrop,
+    path::Path,
+    path::PathBuf,
+    str::FromStr,
 };
 use windows::{
-    core::{w, HSTRING, ComInterface},
+    core::{w, ComInterface, HSTRING},
     Win32::{
         Foundation::BOOL,
         Storage::Packaging::Appx::{
@@ -13,17 +19,13 @@ use windows::{
             APPX_PACKAGE_SETTINGS,
         },
         System::Com::{
-            CoCreateInstance, CreateUri, IStream,
-            STGM_CREATE, STGM_READ, STGM_WRITE, STGM_SHARE_DENY_NONE,
-            Uri_CREATE_CANONICALIZE, CLSCTX_INPROC_SERVER, STREAM_SEEK_SET,
+            CoCreateInstance, CreateUri, IStream, Uri_CREATE_CANONICALIZE, CLSCTX_INPROC_SERVER,
+            STGM_CREATE, STGM_READ, STGM_SHARE_DENY_NONE, STGM_WRITE, STREAM_SEEK_SET,
         },
         UI::Shell::{SHCreateMemStream, SHCreateStreamOnFileEx},
     },
 };
 use yaserde::de::from_str;
-use cargo_metadata::camino::Utf8PathBuf;
-use crate::args;
-use crate::packagelayout;
 
 fn create_appx_package_writer(stream: &IStream) -> Result<IAppxPackageWriter> {
     let hash_method = unsafe {
@@ -51,7 +53,10 @@ fn create_appx_package_writer(stream: &IStream) -> Result<IAppxPackageWriter> {
     Ok(writer)
 }
 
-fn  create_appx_bundle_writer(filename: &PathBuf, version: &cargo_metadata::Version) -> Result<IAppxBundleWriter> {
+fn create_appx_bundle_writer(
+    filename: &Path,
+    version: &cargo_metadata::Version,
+) -> Result<IAppxBundleWriter> {
     let stream = unsafe {
         SHCreateStreamOnFileEx(
             &HSTRING::from(filename.as_os_str()),
@@ -79,36 +84,45 @@ fn create_manifest(
     appmanifest_path: &PathBuf,
     version: &str,
     processor_architecture: &str,
-    bundle_value: &serde_json::value::Value
+    bundle_value: &serde_json::value::Value,
 ) -> Result<IStream> {
-    let template = mustache::compile_path(&appmanifest_path).unwrap();
+    let template = mustache::compile_path(appmanifest_path).unwrap();
 
     let mut data = mustache::MapBuilder::new()
         .insert_str("Version", version.to_string())
-        .insert_str("ProcessorArchitecture", processor_architecture);        
+        .insert_str("ProcessorArchitecture", processor_architecture);
     if let Some(v) = bundle_value.as_object() {
         if v.contains_key("variables") {
             if let Some(vars) = v["variables"].as_array() {
                 for v in vars {
                     let v = v.as_object().unwrap();
-                    if !v.contains_key("name") || !v.contains_key("value") || !v["name"].is_string() || !v["value"].is_string() {
+                    if !v.contains_key("name")
+                        || !v.contains_key("value")
+                        || !v["name"].is_string()
+                        || !v["value"].is_string()
+                    {
                         bail!("Entries in variables must have a name and value field.")
                     }
 
-                    data = data.insert_str(v["name"].as_str().unwrap(), v["value"].as_str().unwrap());
+                    data =
+                        data.insert_str(v["name"].as_str().unwrap(), v["value"].as_str().unwrap());
                 }
             }
         }
     }
     let data = data.build();
-    
+
     let manifestcontent = template.render_data_to_string(&data).unwrap();
 
-    let mut parsedcontent: minidom::Element = manifestcontent.parse()
+    let mut parsedcontent: minidom::Element = manifestcontent
+        .parse()
         .with_context(|| anyhow!("Cannot parse app manifest file {:?}", appmanifest_path))?;
 
     if cli_args.unsigned {
-        if cli_args.store_name.is_some() || cli_args.store_publisher.is_some() || cli_args.store_publisher_display_name.is_some() {
+        if cli_args.store_name.is_some()
+            || cli_args.store_publisher.is_some()
+            || cli_args.store_publisher_display_name.is_some()
+        {
             bail!("None of the --store* arguments can be used when --unsigend is specified.");
         }
 
@@ -150,9 +164,7 @@ fn create_manifest(
 
     let manifestcontent = String::from(&parsedcontent);
 
-    let manifest_stream =
-        unsafe { SHCreateMemStream(Some(&manifestcontent.as_bytes())) }
-            .unwrap();
+    let manifest_stream = unsafe { SHCreateMemStream(Some(manifestcontent.as_bytes())) }.unwrap();
 
     Ok(manifest_stream)
 }
@@ -173,22 +185,27 @@ pub fn run_command_default(
 
     for (bundle_name, bundle_value) in root_package_msix_metadata {
         if let Some(i) = &cli_args.bundle_name {
-            if i!=bundle_name {
+            if i != bundle_name {
                 continue;
             }
         }
 
-        let output_root_path = output_root_path.join(&bundle_name);
+        let output_root_path = output_root_path.join(bundle_name);
         std::fs::create_dir_all(&output_root_path).unwrap();
 
         let bundle_packagelayout_path_as_string = match bundle_value.as_str() {
             None => bundle_value.as_object().unwrap()["file"].as_str().unwrap(),
-            Some(s) => s
+            Some(s) => s,
         };
         let mut bundle_packagelayout_path = Utf8PathBuf::from(&metadata.workspace_root);
-        bundle_packagelayout_path.push(&bundle_packagelayout_path_as_string);
-        let bundle_packagelayout_path = bundle_packagelayout_path.canonicalize()
-            .map_err(|_| anyhow!("Cannot find the package layout file '{}' for the msix entry '{}' in Cargo.toml", bundle_packagelayout_path, bundle_name))?;
+        bundle_packagelayout_path.push(bundle_packagelayout_path_as_string);
+        let bundle_packagelayout_path = bundle_packagelayout_path.canonicalize().map_err(|_| {
+            anyhow!(
+                "Cannot find the package layout file '{}' for the msix entry '{}' in Cargo.toml",
+                bundle_packagelayout_path,
+                bundle_name
+            )
+        })?;
 
         if !bundle_packagelayout_path.exists() {
             return Err(anyhow!("File doesn't exist."));
@@ -196,18 +213,23 @@ pub fn run_command_default(
 
         let packagelayout_template = mustache::compile_path(&bundle_packagelayout_path).unwrap();
 
-        let mut data = mustache::MapBuilder::new()
-            .insert_str("Version", root_package.version.to_string());
+        let mut data =
+            mustache::MapBuilder::new().insert_str("Version", root_package.version.to_string());
         if let Some(v) = bundle_value.as_object() {
             if v.contains_key("variables") {
                 if let Some(vars) = v["variables"].as_array() {
                     for v in vars {
                         let v = v.as_object().unwrap();
-                        if !v.contains_key("name") || !v.contains_key("value") || !v["name"].is_string() || !v["value"].is_string() {
+                        if !v.contains_key("name")
+                            || !v.contains_key("value")
+                            || !v["name"].is_string()
+                            || !v["value"].is_string()
+                        {
                             bail!("Entries in variables must have a name and value field.")
                         }
 
-                        data = data.insert_str(v["name"].as_str().unwrap(), v["value"].as_str().unwrap());
+                        data = data
+                            .insert_str(v["name"].as_str().unwrap(), v["value"].as_str().unwrap());
                     }
                 }
             }
@@ -216,9 +238,15 @@ pub fn run_command_default(
 
         let packagelayout_content = packagelayout_template.render_data_to_string(&data).unwrap();
 
-        let packagelayout_parsed: packagelayout::PackagingLayout = from_str::<packagelayout::PackagingLayout>(&packagelayout_content)
-            .map_err(|err| anyhow!("{}", err))
-            .with_context(|| anyhow!("Cannot parse package layout file {:?}", bundle_packagelayout_path))?;
+        let packagelayout_parsed: packagelayout::PackagingLayout =
+            from_str::<packagelayout::PackagingLayout>(&packagelayout_content)
+                .map_err(|err| anyhow!("{}", err))
+                .with_context(|| {
+                    anyhow!(
+                        "Cannot parse package layout file {:?}",
+                        bundle_packagelayout_path
+                    )
+                })?;
 
         for package_family in packagelayout_parsed.package_families {
             let output_name = package_family.filename;
@@ -236,11 +264,16 @@ pub fn run_command_default(
                     .to_string(),
             );
             manifest_path.push(package_family.manifest_path);
-            let manifest_path = manifest_path.canonicalize()
-                .map_err(|_| anyhow!("Cannot find manifest file {} that is specified in the package layout file.", manifest_path))?;
+            let manifest_path = manifest_path.canonicalize().map_err(|_| {
+                anyhow!(
+                    "Cannot find manifest file {} that is specified in the package layout file.",
+                    manifest_path
+                )
+            })?;
 
             let appx_bundle_writer =
-                create_appx_bundle_writer(&output_path.as_std_path().to_path_buf(), &root_package.version).unwrap();
+                create_appx_bundle_writer(output_path.as_std_path(), &root_package.version)
+                    .unwrap();
 
             for package in package_family.packages {
                 let manifest_stream = create_manifest(
@@ -253,7 +286,7 @@ pub fn run_command_default(
                         root_package.version.patch
                     ),
                     &package.processor_architecture,
-                    bundle_value
+                    bundle_value,
                 )?;
 
                 let package_stream = if !package_family.flat_bundle {
@@ -289,7 +322,6 @@ pub fn run_command_default(
                         )}
                         .with_context(|| anyhow!("Cannot read the file {:?} that is listed as a <File> in the package layout.", filepath))?;
 
-
                     unsafe {
                         appx_package_writer.AddPayloadFile(
                             &HSTRING::from(file.destination_path),
@@ -306,7 +338,7 @@ pub fn run_command_default(
                     let source_platform = buildoutput.source_platform;
 
                     let filepath = if let Some(path) = &cli_args.source_build_output_path {
-                        Utf8PathBuf::from_str(&path)
+                        Utf8PathBuf::from_str(path)
                             .unwrap()
                             .join(source_platform)
                             .join(profile)
@@ -366,7 +398,7 @@ pub fn run_command_default(
                                     None,
                                 )}
                                 .with_context(|| anyhow!("Cannot read the file {:?} that is specified from a <FilePattern> in the package layout.", source_filename))?;
-                            
+
                             let destination_filename =
                                 PathBuf::from(&destination_root).join(&file2);
 
@@ -407,7 +439,11 @@ pub fn run_command_default(
                         appx_bundle_writer
                             .cast::<IAppxBundleWriter4>()
                             .unwrap()
-                            .AddPackageReference(&HSTRING::from(package.filename), &package_stream, false)
+                            .AddPackageReference(
+                                &HSTRING::from(package.filename),
+                                &package_stream,
+                                false,
+                            )
                     }
                     .unwrap();
                 } else {
@@ -415,7 +451,11 @@ pub fn run_command_default(
                         appx_bundle_writer
                             .cast::<IAppxBundleWriter4>()
                             .unwrap()
-                            .AddPayloadPackage(&HSTRING::from(package.filename), &package_stream, false)
+                            .AddPayloadPackage(
+                                &HSTRING::from(package.filename),
+                                &package_stream,
+                                false,
+                            )
                     }
                     .unwrap();
                 }
@@ -425,11 +465,13 @@ pub fn run_command_default(
         }
     }
 
-    if let Some(root_package_appinstaller_metadata) = root_package.metadata["winappinstaller"].as_object() {
+    if let Some(root_package_appinstaller_metadata) =
+        root_package.metadata["winappinstaller"].as_object()
+    {
         for (appinstaller_name, appinstaller_path_as_string) in root_package_appinstaller_metadata {
             let appinstaller_path_as_string = appinstaller_path_as_string.as_str().unwrap();
             let mut appinstaller_path = Utf8PathBuf::from(&metadata.workspace_root);
-            appinstaller_path.push(&appinstaller_path_as_string);
+            appinstaller_path.push(appinstaller_path_as_string);
             let appinstaller_path = appinstaller_path.canonicalize()
                 .map_err(|_| anyhow!("Cannot find the appinstaller file '{}' for the winappinstaller entry '{}' in Cargo.toml", appinstaller_path, appinstaller_name))?;
 
@@ -443,14 +485,18 @@ pub fn run_command_default(
                 .build();
             let appinstaller_content = appinstaller_template.render_data_to_string(&data).unwrap();
 
-            let appinstaller_output_root_path = metadata.target_directory.join("msix").join(appinstaller_name);
+            let appinstaller_output_root_path = metadata
+                .target_directory
+                .join("msix")
+                .join(appinstaller_name);
 
             std::fs::create_dir_all(&appinstaller_output_root_path).unwrap();
 
-            let output_path = appinstaller_output_root_path.join(appinstaller_path.file_name().unwrap().to_str().unwrap());
+            let output_path = appinstaller_output_root_path
+                .join(appinstaller_path.file_name().unwrap().to_str().unwrap());
 
             let mut file = std::fs::File::create(output_path)?;
-            std::io::Write::write_all(&mut file, &appinstaller_content.as_bytes())?;
+            std::io::Write::write_all(&mut file, appinstaller_content.as_bytes())?;
         }
     }
 

@@ -1,11 +1,11 @@
-use std::{fs::{self, OpenOptions}};
+use std::fs::{self, OpenOptions};
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 use crate::args;
 
 fn expand_msix_node_from_metadata(a: toml::Value) -> Option<toml::Value> {
-    a.get("package")?.get("metadata")?.get("msix").map(|v| v.clone())
+    a.get("package")?.get("metadata")?.get("msix").cloned()
 }
 
 pub fn run_command_init(_cli_args: &args::Cli, metadata: &cargo_metadata::Metadata) -> Result<()> {
@@ -25,17 +25,24 @@ pub fn run_command_init(_cli_args: &args::Cli, metadata: &cargo_metadata::Metada
     }
 
     if packagelayout_path.exists() {
-        bail!("A package layout file already exists at {}", packagelayout_path);        
+        bail!(
+            "A package layout file already exists at {}",
+            packagelayout_path
+        );
     }
 
     if appxmanifest_path.exists() {
-        bail!("A appx manifest file already exists at {}", appxmanifest_path);
+        bail!(
+            "A appx manifest file already exists at {}",
+            appxmanifest_path
+        );
     }
 
     std::fs::create_dir_all(msix_root_path).unwrap();
 
     let mut appxmanifest_file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(appxmanifest_path)
         .unwrap();
@@ -43,13 +50,16 @@ pub fn run_command_init(_cli_args: &args::Cli, metadata: &cargo_metadata::Metada
 
     let mut packagelayout_file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(packagelayout_path)
         .unwrap();
     packagelayout_file.set_len(0).unwrap();
 
-    let appxmanifest_template = mustache::compile_str(include_str!("../templates/template_appxmanifest.xml")).unwrap();
-    let packagelayout_template = mustache::compile_str(include_str!("../templates/template_packagelayout.xml")).unwrap();
+    let appxmanifest_template =
+        mustache::compile_str(include_str!("../templates/template_appxmanifest.xml")).unwrap();
+    let packagelayout_template =
+        mustache::compile_str(include_str!("../templates/template_packagelayout.xml")).unwrap();
 
     let data = mustache::MapBuilder::new()
         .insert_str("PackageName", &root_package.name)
@@ -70,8 +80,12 @@ pub fn run_command_init(_cli_args: &args::Cli, metadata: &cargo_metadata::Metada
         })
         .build();
 
-    appxmanifest_template.render_data(&mut appxmanifest_file, &data).unwrap();
-    packagelayout_template.render_data(&mut packagelayout_file, &data).unwrap();
+    appxmanifest_template
+        .render_data(&mut appxmanifest_file, &data)
+        .unwrap();
+    packagelayout_template
+        .render_data(&mut packagelayout_file, &data)
+        .unwrap();
 
     Ok(())
 }
